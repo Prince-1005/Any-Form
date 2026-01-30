@@ -20,7 +20,7 @@ from typing import Dict, Optional, Tuple
 import json
 import time
 import threading
-
+import os
 # ============================================================================
 # FIREBASE INITIALIZATION
 # ============================================================================
@@ -28,26 +28,46 @@ import threading
 @st.cache_resource
 def init_firebase():
     """
-    Initialize Firebase Admin SDK using credentials from Streamlit secrets.
-    Cached to prevent multiple initializations.
+    Initialize Firebase and return the Firestore client.
+    Works with both local secrets.toml and Hugging Face environment variables.
     """
-    try:
-        firebase_admin.get_app()
-    except ValueError:
-        cred_dict = {
-            "type": st.secrets["firebase"]["type"],
-            "project_id": st.secrets["firebase"]["project_id"],
-            "private_key_id": st.secrets["firebase"]["private_key_id"],
-            "private_key": st.secrets["firebase"]["private_key"],
-            "client_email": st.secrets["firebase"]["client_email"],
-            "client_id": st.secrets["firebase"]["client_id"],
-            "auth_uri": st.secrets["firebase"]["auth_uri"],
-            "token_uri": st.secrets["firebase"]["token_uri"],
-            "auth_provider_x509_cert_url": st.secrets["firebase"]["auth_provider_x509_cert_url"],
-            "client_x509_cert_url": st.secrets["firebase"]["client_x509_cert_url"]
-        }
+    if not firebase_admin._apps:
+        try:
+            # Try to get from st.secrets first (local development)
+            fb_creds = st.secrets["firebase"]
+            private_key = fb_creds["private_key"].replace("\\n", "\n")
+            
+            cred_dict = {
+                "type": fb_creds["type"],
+                "project_id": fb_creds["project_id"],
+                "private_key_id": fb_creds["private_key_id"],
+                "private_key": private_key,
+                "client_email": fb_creds["client_email"],
+                "client_id": fb_creds["client_id"],
+                "auth_uri": fb_creds["auth_uri"],
+                "token_uri": fb_creds["token_uri"],
+                "auth_provider_x509_cert_url": fb_creds["auth_provider_x509_cert_url"],
+                "client_x509_cert_url": fb_creds["client_x509_cert_url"]
+            }
+        except:
+            # Fall back to environment variables (Hugging Face deployment)
+            private_key = os.getenv("FIREBASE_PRIVATE_KEY", "").replace("\\n", "\n")
+            
+            cred_dict = {
+                "type": os.getenv("FIREBASE_TYPE", "service_account"),
+                "project_id": os.getenv("FIREBASE_PROJECT_ID"),
+                "private_key_id": os.getenv("FIREBASE_PRIVATE_KEY_ID"),
+                "private_key": private_key,
+                "client_email": os.getenv("FIREBASE_CLIENT_EMAIL"),
+                "client_id": os.getenv("FIREBASE_CLIENT_ID"),
+                "auth_uri": os.getenv("FIREBASE_AUTH_URI", "https://accounts.google.com/o/oauth2/auth"),
+                "token_uri": os.getenv("FIREBASE_TOKEN_URI", "https://oauth2.googleapis.com/token"),
+                "auth_provider_x509_cert_url": os.getenv("FIREBASE_AUTH_PROVIDER_X509_CERT_URL", "https://www.googleapis.com/oauth2/v1/certs"),
+                "client_x509_cert_url": os.getenv("FIREBASE_CLIENT_X509_CERT_URL")
+            }
+        
         cred = credentials.Certificate(cred_dict)
-        initialize_app(cred)
+        firebase_admin.initialize_app(cred)
     
     return firestore.client()
 
@@ -659,3 +679,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
