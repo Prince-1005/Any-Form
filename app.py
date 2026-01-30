@@ -4,7 +4,7 @@ import streamlit as st
 # PAGE CONFIGURATION - MUST BE FIRST STREAMLIT COMMAND
 # ============================================================================
 st.set_page_config(
-    page_title="DAV Project Submission",
+    page_title="DAV Project Form",
     page_icon="🎓",
     layout="centered",
     initial_sidebar_state="collapsed"
@@ -20,7 +20,6 @@ from typing import Dict, Optional, Tuple
 import json
 import time
 import threading
-import os
 
 # ============================================================================
 # FIREBASE INITIALIZATION
@@ -29,51 +28,28 @@ import os
 @st.cache_resource
 def init_firebase():
     """
-    Initialize Firebase and return the Firestore client.
-    Works with both local secrets.toml and Hugging Face environment variables.
+    Initialize Firebase Admin SDK using credentials from Streamlit secrets.
+    Cached to prevent multiple initializations.
     """
-    if not firebase_admin._apps:
-        try:
-            # Try to get from st.secrets first (local development)
-            fb_creds = st.secrets["firebase"]
-            private_key = fb_creds["private_key"].replace("\\n", "\n")
-            
-            cred_dict = {
-                "type": fb_creds["type"],
-                "project_id": fb_creds["project_id"],
-                "private_key_id": fb_creds["private_key_id"],
-                "private_key": private_key,
-                "client_email": fb_creds["client_email"],
-                "client_id": fb_creds["client_id"],
-                "auth_uri": fb_creds["auth_uri"],
-                "token_uri": fb_creds["token_uri"],
-                "auth_provider_x509_cert_url": fb_creds["auth_provider_x509_cert_url"],
-                "client_x509_cert_url": fb_creds["client_x509_cert_url"]
-            }
-        except:
-            # Fall back to environment variables (Hugging Face deployment)
-            private_key = os.getenv("FIREBASE_PRIVATE_KEY", "").replace("\\n", "\n")
-            
-            cred_dict = {
-                "type": os.getenv("FIREBASE_TYPE", "service_account"),
-                "project_id": os.getenv("FIREBASE_PROJECT_ID"),
-                "private_key_id": os.getenv("FIREBASE_PRIVATE_KEY_ID"),
-                "private_key": private_key,
-                "client_email": os.getenv("FIREBASE_CLIENT_EMAIL"),
-                "client_id": os.getenv("FIREBASE_CLIENT_ID"),
-                "auth_uri": os.getenv("FIREBASE_AUTH_URI", "https://accounts.google.com/o/oauth2/auth"),
-                "token_uri": os.getenv("FIREBASE_TOKEN_URI", "https://oauth2.googleapis.com/token"),
-                "auth_provider_x509_cert_url": os.getenv("FIREBASE_AUTH_PROVIDER_X509_CERT_URL", "https://www.googleapis.com/oauth2/v1/certs"),
-                "client_x509_cert_url": os.getenv("FIREBASE_CLIENT_X509_CERT_URL")
-            }
-        
+    try:
+        firebase_admin.get_app()
+    except ValueError:
+        cred_dict = {
+            "type": st.secrets["firebase"]["type"],
+            "project_id": st.secrets["firebase"]["project_id"],
+            "private_key_id": st.secrets["firebase"]["private_key_id"],
+            "private_key": st.secrets["firebase"]["private_key"],
+            "client_email": st.secrets["firebase"]["client_email"],
+            "client_id": st.secrets["firebase"]["client_id"],
+            "auth_uri": st.secrets["firebase"]["auth_uri"],
+            "token_uri": st.secrets["firebase"]["token_uri"],
+            "auth_provider_x509_cert_url": st.secrets["firebase"]["auth_provider_x509_cert_url"],
+            "client_x509_cert_url": st.secrets["firebase"]["client_x509_cert_url"]
+        }
         cred = credentials.Certificate(cred_dict)
-        firebase_admin.initialize_app(cred)
+        initialize_app(cred)
     
     return firestore.client()
-
-# Usage in your app
-db = init_firebase()
 
 # ============================================================================
 # VALIDATION FUNCTIONS
@@ -130,6 +106,33 @@ def validate_url(url: str) -> Tuple[bool, str]:
 # DATABASE OPERATIONS
 # ============================================================================
 
+def check_duplicate_fields(db, data: Dict) -> Tuple[bool, str]:
+    collection_ref = db.collection('project_submissions')
+    
+    unique_fields = {
+        'email': data['email'],
+        'enrollment_number': data['enrollment_number'],
+        'contact_number': data['contact_number'],
+        'project_name': data['project_name'],
+        'source_url': data['source_url']
+    }
+    
+    for field_name, field_value in unique_fields.items():
+        query = collection_ref.where(field_name, '==', field_value).limit(1)
+        docs = query.stream()
+        
+        for doc in docs:
+            field_display_names = {
+                'email': 'Email ID',
+                'enrollment_number': 'Enrollment Number',
+                'contact_number': 'Contact Number',
+                'project_name': 'Project Name',
+                'source_url': 'Source URL'
+            }
+            return True, f"This {field_display_names[field_name]} is already taken."
+    
+    return False, ""
+
 def save_submission(db, data: Dict) -> Tuple[bool, str]:
     try:
         # Use Enrollment Number as the Document ID
@@ -148,33 +151,27 @@ def save_submission(db, data: Dict) -> Tuple[bool, str]:
 def send_confirmation_email(recipient_email: str, full_name: str, project_name: str) -> bool:
     """
     Send confirmation email to the user after successful submission.
+    Returns: True if successful, False otherwise
     """
     try:
         import smtplib
         from email.mime.text import MIMEText
         from email.mime.multipart import MIMEMultipart
         
-        # Get email credentials
-        try:
-            e_creds = st.secrets["email"]
-            sender_email = e_creds["sender_email"]
-            sender_password = e_creds["sender_password"]
-            smtp_server = e_creds["smtp_server"]
-            smtp_port = e_creds["smtp_port"]
-        except:
-            sender_email = os.getenv("EMAIL_SENDER")
-            sender_password = os.getenv("EMAIL_PASSWORD")
-            smtp_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")
-            smtp_port = int(os.getenv("SMTP_PORT", "587"))
+        # Get email credentials from Streamlit secrets
+        sender_email = st.secrets["email"]["sender_email"]
+        sender_password = st.secrets["email"]["sender_password"]
+        smtp_server = st.secrets["email"]["smtp_server"]
+        smtp_port = st.secrets["email"]["smtp_port"]
         
-        # Create message
-        msg = MIMEMultipart('alternative')
-        msg['Subject'] = "Project Submission Confirmation - DAV"
-        msg['From'] = sender_email
-        msg['To'] = recipient_email
+        # Create email message
+        message = MIMEMultipart("alternative")
+        message["Subject"] = "🎉 Project Submission Confirmation - DAV Subject"
+        message["From"] = sender_email
+        message["To"] = recipient_email
         
         # HTML email body
-        html = f"""
+        html_body = f"""
         <html>
             <body style="font-family: Arial, sans-serif; background-color: #F5FBE6; padding: 20px;">
                 <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; padding: 30px; border: 2px solid #215E61;">
@@ -196,349 +193,252 @@ def send_confirmation_email(recipient_email: str, full_name: str, project_name: 
                     </div>
                     
                     <p style="color: #215E61; font-size: 16px; line-height: 1.6;">
-                        Madam will review your submission shortly. If you have any questions or need to make changes, please don't hesitate to contact Developer MR. PRINCE.
+                        Our team will review your submission shortly. If you have any questions or need to make changes, please don't hesitate to contact MR. RPINCE.
                     </p>
                     
                     <hr style="border: none; height: 2px; background: #215E61; margin: 20px 0;">
                     
                     <p style="color: #6b7280; font-size: 14px; text-align: center;">
                         This is an automated email. Please do not reply to this message.<br>
-                        © 2026 Project Form Submission. All rights reserved by MR. PRINCE.
+                        © 2026 Project Form Submission. All rights reserved.
                     </p>
                 </div>
             </body>
         </html>
         """
         
-        # Attach HTML part
-        part = MIMEText(html, 'html')
-        msg.attach(part)
+        # Plain text alternative
+        text_body = f"""
+        Submission Successful!
+        
+        Hello {full_name},
+        
+        Thank you for submitting your project to the DAV Project Submission. Your submission has been successfully recorded in our system.
+        
+        Submission Details:
+        - Project Name: {project_name}
+        - Email: {recipient_email}
+        - Submission Date: {time.strftime('%Y-%m-%d %H:%M:%S')}
+        
+        Our team will review your submission shortly. If you have any questions or need to make changes, please don't hesitate to contact MR. PRINCE.
+        
+        This is an automated email. Please do not reply to this message.
+        © 2026 Project Form Submission. All rights reserved.
+        """
+        
+        part1 = MIMEText(text_body, "plain")
+        part2 = MIMEText(html_body, "html")
+        message.attach(part1)
+        message.attach(part2)
         
         # Send email
         with smtplib.SMTP(smtp_server, smtp_port) as server:
             server.starttls()
             server.login(sender_email, sender_password)
-            server.sendmail(sender_email, recipient_email, msg.as_string())
+            server.sendmail(sender_email, recipient_email, message.as_string())
         
         return True
         
+    except KeyError:
+        st.warning("⚠️ Email service not configured. Please set up email credentials in Streamlit secrets.")
+        return False
     except Exception as e:
-        print(f"Email sending failed: {str(e)}")
+        st.warning(f"⚠️ Could not send confirmation email: {str(e)}")
         return False
 
 # ============================================================================
-# CSS STYLING
+# PROFESSIONAL CSS WITH HIGH CONTRAST
 # ============================================================================
 
-def load_css():
+def apply_custom_css():
     st.markdown("""
-        <style>
-            /* PALETTE:
-               #362F4F (Dark Navy/Purple) - Base/Text
-               #5B23FF (Vivid Purple) - Primary/Headers
-               #008BFF (Bright Blue) - Borders/Accents
-               #E4FF30 (Neon Yellow) - Highlights/Success
-            */
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+    
+    /* Hide Streamlit Branding */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    .stDeployButton {visibility: hidden;}
+    header {visibility: hidden;}
+    
+    /* Page Background */
+    .main {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        padding: 2.5rem 1rem;
+        min-height: 100vh;
+    }
+    
+    /* Typography */
+    * {
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    
+    /* Custom styling for labels */
+    .stTextInput > label, .stTextArea > label {
+        font-weight: 600;
+        color: #1a1a1a !important;
+        font-size: 0.9rem;
+    }
+    
+    /* Input Fields */
+    .stTextInput > div > div > input,
+    .stTextArea > div > div > textarea {
+        border: 2px solid #d1d5db;
+        border-radius: 10px;
+        padding: 0.75rem 1rem;
+        font-size: 1rem;
+        color: #1a1a1a;
+        background: #fafafa;
+        transition: all 0.2s ease;
+        font-weight: 500;
+    }
+    
+    .stTextInput > div > div > input::placeholder,
+    .stTextArea > div > div > textarea::placeholder {
+        color: #6b7280;
+        opacity: 0.7;
+    }
+    
+    .stTextInput > div > div > input:focus,
+    .stTextArea > div > div > textarea:focus {
+        border-color: #667eea;
+        background: #ffffff;
+        box-shadow: 0 0 0 4px rgba(102, 126, 234, 0.1);
+        outline: none;
+    }
+    
+    .detail-row {
+        background-color: #ffffff;
+        padding: 12px 15px;
+        margin: 8px 0;
+        border-radius: 8px;
+        border: 1px solid #e0e0e0;
+        border-left: 4px solid #008BFF;
+        transition: transform 0.2s;
+    }
+            
+    .detail-row:hover {
+            transform: translateX(5px);
+            border-left-color: #E4FF30;
+    }
+            
+    .detail-label {
+        color: #362F4F;
+        font-weight: 700;
+        font-size: 0.9rem;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+            
+    .detail-value {
+        color: #5B23FF;
+        font-size: 1.05rem;
+        margin-top: 3px;
+        font-family: monospace;
+    }
+                
+    /* Submit button styling */
+    .stButton > button {
+        width: 100%;
+        background: #0052a3;
+        color: #ffffff;
+        font-weight: 700;
+        font-size: 1.05rem;
+        letter-spacing: 0.02em;
+        border-radius: 12px;
+        padding: 1rem 2rem;
+        border: none;
+        margin-top: 1rem;
+        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        box-shadow: 0 10px 25px rgba(102, 126, 234, 0.3);
+        text-transform: uppercase;
+    }
+    
+    .stButton > button:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 15px 35px rgba(102, 126, 234, 0.4);
+    }
+    
+    .stButton > button:active {
+        transform: translateY(-1px);
+    }
+    
+    /* Warning messages - HIGH CONTRAST */
+    .element-container .stAlert,
+    .stAlert {
+        border-radius: 10px;
+        border-left: 5px solid;
+        padding: 1rem 1.25rem;
+        margin-bottom: 1rem;
+        font-size: 0.95rem;
+        font-weight: 500;
+    }
+    
+    .stSuccess {
+        background-color: #f0fdf4;
+        border-left-color: #16a34a;
+        color: #15803d;
+    }
+    
+    .success-icon {
+        animation: popIn 0.6s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        font-size: 20px;
+        text-align: left;
+        margin-bottom: 10px;
+        text-shadow: 0 0 20px #E4FF30;
+    }                
 
-            /* ============================================
-               STREAMLIT UI CLEANUP
-               ============================================ */
-            #MainMenu { visibility: hidden; }
-            footer { visibility: hidden; }
-            .stDeployButton { visibility: hidden; }
-            
-            /* ============================================
-               BACKGROUND & MAIN CONTAINER
-               ============================================ */
-            
-            /* Background gradient */
-            .stApp {
-                background: rgba(14,17,23,1);
-            }
-            
-            /* Main container styling */
-            .main .block-container {
-                background-color: rgba(255, 255, 255, 0.97);
-                border-radius: 15px;
-                padding: 2rem;
-                box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
-                max-width: 800px;
-                margin-top: 2rem;
-                margin-bottom: 2rem;
-                border-top: 5px solid #E4FF30;
-            }
-            
-            /* ============================================
-               TYPOGRAPHY
-               ============================================ */
-            
-            /* Main title styling */
-            h1 {
-                color: #5B23FF !important;
-                font-weight: 800 !important;
-                text-align: center;
-                margin-bottom: 0.5rem !important;
-                text-transform: uppercase;
-                letter-spacing: 1px;
-            }
-            
-            /* Subtitle styling */
-            h3 {
-                color: #fffdd0 !important;
-                text-align: center;
-                font-weight: 600 !important;
-            }
-            
-            /* Section headers */
-            .section-header {
-                background: linear-gradient(90deg, #5B23FF, #008BFF);
-                color: #ffffff;
-                padding: 12px 20px;
-                border-radius: 8px;
-                font-size: 1.1rem;
-                font-weight: 700;
-                margin: 20px 0 15px 0;
-                box-shadow: 0 4px 10px rgba(91, 35, 255, 0.3);
-                border-left: 5px solid #E4FF30;
-            }
-            
-            /* ============================================
-               FORM INPUTS
-               ============================================ */
-            
-            /* Input labels */
-            .stTextInput > label, 
-            .stTextArea > label {
-                font-weight: 700;
-                color: #362F4F;
-            }
-            
-            .input-label {
-                color: #6a99ff;
-                font-weight: 700;
-                font-size: 0.95rem;
-                margin-bottom: 5px;
-                display: block;
-            }
-            
-            .required {
-                color: red;
-                font-weight: 800;
-            }
-            
-            /* Text inputs and textareas */
-            .stTextInput input,
-            .stTextArea textarea {
-                border: 2px solid #008BFF !important;
-                border-radius: 8px !important;
-                padding: 10px !important;
-                font-size: 1rem !important;
-                transition: all 0.3s ease !important;
-                background-color: #F8F9FF !important;
-                color: #362F4F !important;
-            }
-            
-            /* Input focus state */
-            .stTextInput input:focus,
-            .stTextArea textarea:focus {
-                border-color: #5B23FF !important;
-                box-shadow: 0 0 0 3px rgba(91, 35, 255, 0.2) !important;
-                background-color: #ffffff !important;
-                outline: none !important;
-            }
-            
-            /* ============================================
-               BUTTONS
-               ============================================ */
-            
-            /* Submit button styling */
-            .stButton > button {
-                width: 100%;
-                background: linear-gradient(135deg, #5B23FF, #008BFF) !important;
-                color: #E4FF30 !important; /* Neon Yellow Text */
-                font-weight: 800 !important;
-                font-size: 1.2rem !important;
-                border-radius: 10px !important;
-                padding: 0.85rem 1.5rem !important;
-                border: 2px solid transparent !important;
-                box-shadow: 0 5px 15px rgba(91, 35, 255, 0.4) !important;
-                transition: all 0.3s ease !important;
-                text-transform: uppercase;
-                letter-spacing: 1.5px;
-            }
-            
-            /* Button hover state */
-            .stButton > button:hover {
-                background: linear-gradient(135deg, #6a99ff, #5B23FF) !important;
-                color: #E4FF30 !important;
-                border: 2px solid #E4FF30 !important;
-                transform: translateY(-2px);
-                box-shadow: 0 0 20px rgba(228, 255, 48, 0.4) !important;
-            }
-            
-            /* Button disabled state */
-            .stButton > button:disabled {
-                background: #cfcfcf !important;
-                color: #666 !important;
-                border-color: transparent !important;
-                cursor: not-allowed;
-            }
-            
-            /* ============================================
-               ALERT MESSAGES
-               ============================================ */
-            
-            .element-container .stAlert {
-                padding: 0.75rem;
-                margin-bottom: 0.75rem;
-                border-radius: 8px;
-                border-left: 5px solid;
-            }
-            
-            /* Success messages - Yellow/Lime Theme */
-            .stSuccess {
-                background-color: #f9ffe0 !important;
-                border-left-color: #E4FF30 !important;
-                color: #6a99ff !important;
-            }
-            
-            /* Error messages */
-            .stError {
-                background-color: #fff0f0 !important;
-                border-left-color: #ff3333 !important;
-                color: #6a99ff !important;
-            }
-            
-            /* Warning messages */
-            .stWarning {
-                background-color: #fffbe6 !important;
-                border-left-color: #ffcc00 !important;
-                color: #6a99ff !important;
-            }
-            
-            /* ============================================
-               EXPANDERS
-               ============================================ */
-            
-            .streamlit-expanderHeader {
-                background-color: #F8F9FF !important;
-                border: 1px solid #008BFF !important;
-                border-radius: 8px !important;
-                color: #5B23FF !important;
-                font-weight: 600 !important;
-            }
-            
-            .streamlit-expanderHeader:hover {
-                background-color: #E4FF30 !important;
-                color: #6a99ff !important;
-            }
-            
-            /* ============================================
-               MISC COMPONENTS
-               ============================================ */
-            
-            /* Spinner */
-            .stSpinner > div {
-                border-top-color: #E4FF30 !important;
-            }
-            
-            /* Divider */
-            hr {
-                border-color: #008BFF !important;
-                opacity: 0.3;
-                margin: 1.5rem 0 !important;
-            }
-            
-            /* ============================================
-               SUCCESS PAGE COMPONENTS
-               ============================================ */
-            
-            .success-card {
-                background: linear-gradient(135deg, #ffffff, #F0F4FF);
-                border: 2px solid #E4FF30;
-                border-radius: 15px;
-                padding: 30px;
-                margin: 20px 0;
-                box-shadow: 0 0 30px rgba(91, 35, 255, 0.15);
-            }
-            
-            .success-card h2 {
-                color: #5B23FF !important;
-                margin-bottom: 15px !important;
-            }
-            
-            .detail-row {
-                background-color: #ffffff;
-                padding: 12px 15px;
-                margin: 8px 0;
-                border-radius: 8px;
-                border: 1px solid #e0e0e0;
-                border-left: 4px solid #008BFF;
-                transition: transform 0.2s;
-            }
-            
-            .detail-row:hover {
-                transform: translateX(5px);
-                border-left-color: #E4FF30;
-            }
-            
-            .detail-label {
-                color: #362F4F;
-                font-weight: 700;
-                font-size: 0.9rem;
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-            }
-            
-            .detail-value {
-                color: #5B23FF;
-                font-size: 1.05rem;
-                margin-top: 3px;
-                font-family: monospace;
-            }
-            
-            /* Animation */
-            @keyframes popIn {
-                0% { transform: scale(0); opacity: 0; }
-                80% { transform: scale(1.1); opacity: 1; }
-                100% { transform: scale(1); opacity: 1; }
-            }
-            
-            .success-icon {
-                animation: popIn 0.6s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-                font-size: 5rem;
-                text-align: center;
-                margin-bottom: 20px;
-                text-shadow: 0 0 20px #E4FF30;
-            }
-        </style>
-
-    """, unsafe_allow_html=True)
+    .required {
+        color: red;
+        font-weight: 800;
+    }
+                      
+    .stError {
+        background-color: #fef2f2;
+        border-left-color: #dc2626;
+        color: #991b1b;
+    }
+    
+    .stWarning {
+        background-color: #fffbeb;
+        border-left-color: #f59e0b;
+        color: #b45309;
+    }
+    
+    .stInfo {
+        background-color: #eff6ff;
+        border-left-color: #3b82f6;
+        color: #1e40af;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
 # ============================================================================
 # SUCCESS PAGE
 # ============================================================================
 
-def show_success_page(data: Dict):
-    """Display a beautiful success confirmation page"""
-    st.markdown(
-        '<div class="success-icon">✅</div>',
-        unsafe_allow_html=True
-    )
-
-    st.markdown("## 🎉 Submission Successful!")
-    st.markdown("Your project has been submitted successfully. A confirmation email has been sent to your email address.")
-    
+def show_success_page(submission_data: Dict):
+    """Display a beautiful success page after form submission"""
+    st.markdown(f"""
+        <div class="success-container">
+            <div><div class="success-icon">🎉 Form Submit Successfully!</div>
+            </div>
+                <p class="success-message">
+                Thank you, <strong>{submission_data['full_name']}</strong> 😊<br>
+                Your project data has been successfully submitted to our system.
+            </p>
+        </div>
+    """, unsafe_allow_html=True)
     st.markdown("### 📋 Submission Summary")
     
     # Display submission details
     details = [
-        ("Email", data['email']),
-        ("Enrollment Number", data['enrollment_number']),
-        ("Full Name", data['full_name']),
-        ("Contact Number", data['contact_number']),
-        ("Project Name", data['project_name']),
-        ("Source URL", data['source_url'])
+        ("Email", submission_data['email']),
+        ("Enrollment Number", submission_data['enrollment_number']),
+        ("Full Name", submission_data['full_name']),
+        ("Contact Number", submission_data['contact_number']),
+        ("Project Name", submission_data['project_name']),
+        ("Source URL", submission_data['source_url'])
     ]
     
     for label, value in details:
@@ -555,7 +455,7 @@ def show_success_page(data: Dict):
     st.markdown('</div>', unsafe_allow_html=True)
     
     st.success("✉️ Please check your email for confirmation.")
-    st.info("💡 Keep this confirmation for your records.")
+    st.info("💬 for any issues contact MR. PRINCE.")
     st.balloons()
 
 # ============================================================================
@@ -563,8 +463,8 @@ def show_success_page(data: Dict):
 # ============================================================================
 
 def main():
-    # Load CSS
-    load_css()
+    apply_custom_css()
+    db = init_firebase()
     
     # Initialize session state
     if 'submission_complete' not in st.session_state:
@@ -591,7 +491,7 @@ def main():
         return
     
     # Display form
-    st.title("🎓 DAV Project Submission Form")
+    st.title("🎓 DAV Project Form")
     st.markdown("### Submit your project details below")
     st.markdown("Please fill Original Email ID for Getting Confirmation Email after Submission.")
     st.markdown("---")
@@ -706,11 +606,15 @@ def main():
                         'submitted_at': firestore.SERVER_TIMESTAMP
                     }
                     
-                    # 1. NEW SAVE LOGIC
+                    # --- REPLACEMENT CODE STARTS HERE ---
+                    
+                    # 1. NEW SAVE LOGIC (Replaces check_duplicate_fields)
+                    # We try to create the document directly. If the ID exists, it fails automatically.
                     success, error_msg = save_submission(db, submission_data)
                     
                     if success:
-                        # 2. NEW EMAIL LOGIC
+                        # 2. NEW EMAIL LOGIC (Replaces blocking email call)
+                        # We start a background thread so the user doesn't have to wait.
                         email_thread = threading.Thread(
                             target=send_confirmation_email,
                             args=(
@@ -727,6 +631,7 @@ def main():
                         time.sleep(0.5)
                         st.rerun()
                     else:
+                        # This catches the duplicate enrollment error from save_submission
                         st.error(f"❌ {error_msg}")
                         st.session_state.is_submitting = False
     
@@ -754,4 +659,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
