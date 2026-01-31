@@ -293,16 +293,14 @@ def apply_custom_css():
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     }
     
-    /* Custom styling for labels */
-    .stTextInput > label, .stTextArea > label {
-        font-weight: 600;
-        color: #1a1a1a !important;
-        font-size: 0.9rem;
-    }
-    
-    /* Input Fields */
+    /* Ensure caret / cursor is always visible and accessible */
     .stTextInput > div > div > input,
-    .stTextArea > div > div > textarea {
+    .stTextArea > div > div > textarea,
+    input[type="text"],
+    input[type="email"],
+    input[type="tel"],
+    textarea {
+        /* Primary styles */
         border: 2px solid #d1d5db;
         border-radius: 10px;
         padding: 0.75rem 1rem;
@@ -311,22 +309,36 @@ def apply_custom_css():
         background: #fafafa;
         transition: all 0.2s ease;
         font-weight: 500;
+
+        /* Explicit caret/text-fill so the cursor is always visible across browsers */
+        caret-color: #0052a3;               /* visible caret color (blue) */
+        -webkit-text-fill-color: #1a1a1a;   /* for WebKit browsers */
     }
-    
+
+    /* Placeholder color */
     .stTextInput > div > div > input::placeholder,
     .stTextArea > div > div > textarea::placeholder {
         color: #6b7280;
         opacity: 0.7;
     }
     
+    /* Focus state: keep caret visible and add subtle highlight */
     .stTextInput > div > div > input:focus,
-    .stTextArea > div > div > textarea:focus {
+    .stTextArea > div > div > textarea:focus,
+    input[type="text"]:focus,
+    input[type="email"]:focus,
+    input[type="tel"]:focus,
+    textarea:focus {
         border-color: #667eea;
         background: #ffffff;
         box-shadow: 0 0 0 4px rgba(102, 126, 234, 0.1);
         outline: none;
+
+        /* reinforce caret visibility on focus */
+        caret-color: #0052a3;
+        -webkit-text-fill-color: #1a1a1a;
     }
-    
+
     .detail-row {
         background-color: #ffffff;
         padding: 12px 15px;
@@ -432,7 +444,6 @@ def apply_custom_css():
     }
     </style>
 """, unsafe_allow_html=True)
-
 # ============================================================================
 # SUCCESS PAGE
 # ============================================================================
@@ -679,5 +690,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
