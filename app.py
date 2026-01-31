@@ -283,7 +283,7 @@ def apply_custom_css():
     
     /* Page Background */
     .main {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        background: black;
         padding: 2.5rem 1rem;
         min-height: 100vh;
     }
@@ -679,4 +679,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
